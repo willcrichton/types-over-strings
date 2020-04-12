@@ -14,29 +14,25 @@ pub trait DIBuilder {
   fn build(input: Self::Input) -> Self::Output;
 }
 
-pub struct DIManager {
-  pub(crate) objs: TypeMap,
-}
+pub struct DIManager(TypeMap);
 
 impl DIManager {
   pub fn new() -> DIManager {
-    DIManager {
-      objs: TypeMap::new(),
-    }
+    DIManager(TypeMap::new())
   }
 
   pub fn build<T: DIBuilder>(&mut self) -> Option<DIObj<T::Output>> {
-    let deps = <T::Input as GetInput>::get_input(self)?;
-    let obj = <T as DIBuilder>::build(deps);
+    let deps = T::Input::get_input(self)?;
+    let obj = T::build(deps);
     let sync_obj = Arc::new(Mutex::new(obj));
-    self.objs.set::<DIObj<T::Output>>(sync_obj.clone());
+    self.0.set::<DIObj<T::Output>>(sync_obj.clone());
     Some(sync_obj)
   }
 }
 
 impl<T: 'static> GetInput for DIObj<T> {
   fn get_input(manager: &DIManager) -> Option<Self> {
-    manager.objs.get::<Self>().map(|obj| obj.clone())
+    manager.0.get::<Self>().map(|obj| obj.clone())
   }
 }
 
@@ -48,14 +44,17 @@ impl GetInput for () {
 
 impl<T: GetInput> GetInput for (T,) {
   fn get_input(manager: &DIManager) -> Option<Self> {
-    <T as GetInput>::get_input(manager).map(|t| (t,))
+    T::get_input(manager).map(|t| (t,))
   }
 }
 
 impl<S: GetInput, T: GetInput> GetInput for (S, T) {
   fn get_input(manager: &DIManager) -> Option<Self> {
-    <S as GetInput>::get_input(manager)
-      .and_then(|s| <T as GetInput>::get_input(manager).and_then(|t| Some((s, t))))
+    S::get_input(manager).and_then(|s| {
+      T::get_input(manager).and_then(|t| {
+        Some((s, t))
+      })
+    })
   }
 }
 
