@@ -1,120 +1,61 @@
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use crate::typemap::TypeMap;
 use std::sync::{Arc, Mutex};
 
-type TypeMap<V> = HashMap<TypeId, V>;
+pub type DIObj<T> = Arc<Mutex<T>>;
 
-type DIObj<T> = Arc<Mutex<T>>;
-
-trait GetDep: 'static + Sized {
-  fn get_dep(manager: &DIManager) -> Option<Self>;
+pub trait GetInput: 'static + Sized {
+  fn get_input(manager: &DIManager) -> Option<Self>;
 }
 
-trait DIBuilder {
-    type Deps: GetDep;
-    type Ret: 'static;
+pub trait DIBuilder {
+  type Input: GetInput;
+  type Output: 'static;
 
-    fn build(deps: Self::Deps) -> Self::Ret;
+  fn build(input: Self::Input) -> Self::Output;
 }
 
-struct DIManager {
-  pub(crate) objs: TypeMap<Box<dyn Any>>
+pub struct DIManager {
+  pub(crate) objs: TypeMap,
 }
 
 impl DIManager {
   pub fn new() -> DIManager {
-    DIManager { objs: HashMap::new() }
+    DIManager {
+      objs: TypeMap::new(),
+    }
   }
 
-  pub fn build<T: DIBuilder>(&mut self) -> Option<DIObj<T::Ret>> {
-    let deps = <T::Deps as GetDep>::get_dep(self)?;
+  pub fn build<T: DIBuilder>(&mut self) -> Option<DIObj<T::Output>> {
+    let deps = <T::Input as GetInput>::get_input(self)?;
     let obj = <T as DIBuilder>::build(deps);
     let sync_obj = Arc::new(Mutex::new(obj));
-    self.objs.insert(TypeId::of::<DIObj<T::Ret>>(), Box::new(sync_obj.clone()));
+    self.objs.set::<DIObj<T::Output>>(sync_obj.clone());
     Some(sync_obj)
   }
 }
 
-
-impl<T: 'static> GetDep for DIObj<T> {
-  fn get_dep(manager: &DIManager) -> Option<Self> {
-    manager.objs.get(&TypeId::of::<Self>()).map(|obj| {
-      obj.downcast_ref::<Self>().unwrap().clone()
-    })
+impl<T: 'static> GetInput for DIObj<T> {
+  fn get_input(manager: &DIManager) -> Option<Self> {
+    manager.objs.get::<Self>().map(|obj| obj.clone())
   }
 }
 
-impl GetDep for () {
-  fn get_dep(manager: &DIManager) -> Option<Self> {
+impl GetInput for () {
+  fn get_input(_manager: &DIManager) -> Option<Self> {
     Some(())
   }
 }
 
-impl<T: GetDep> GetDep for (T,) {
-  fn get_dep(manager: &DIManager) -> Option<Self> {
-    <T as GetDep>::get_dep(manager).map(|t| (t,))
+impl<T: GetInput> GetInput for (T,) {
+  fn get_input(manager: &DIManager) -> Option<Self> {
+    <T as GetInput>::get_input(manager).map(|t| (t,))
   }
 }
 
-impl<S: GetDep, T: GetDep> GetDep for (S, T) {
-  fn get_dep(manager: &DIManager) -> Option<Self> {
-    <S as GetDep>::get_dep(manager).and_then(|s| {
-      <T as GetDep>::get_dep(manager).and_then(|t| {
-        Some((s, t))
-      })
-    })
-  }
-}
-
-trait A {
-    fn run(&self) -> i32;
-}
-
-struct A1;
-struct A2;
-impl A for A1 {
-    fn run(&self) -> i32 {
-        1
-    }
-}
-impl A for A2 {
-    fn run(&self) -> i32 {
-        2
-    }
-}
-
-impl DIBuilder for A1 {
-  type Deps = ();
-  type Ret = Box<dyn A>;
-  fn build((): ()) -> Box<dyn A> {
-    Box::new(A1)
-  }
-}
-
-impl DIBuilder for A2 {
-  type Deps = ();
-  type Ret = Box<dyn A>;
-  fn build((): ()) -> Box<dyn A> {
-    Box::new(A2)
-  }
-}
-
-struct B {
-  a: DIObj<Box<dyn A>>
-}
-
-impl DIBuilder for B {
-  type Deps = (DIObj<Box<dyn A>>,);
-  type Ret = B;
-
-  fn build((a,): Self::Deps) -> B {
-    B { a }
-  }
-}
-
-impl B {
-  fn run(&self) {
-    println!("A: {}", self.a.lock().unwrap().run());
+impl<S: GetInput, T: GetInput> GetInput for (S, T) {
+  fn get_input(manager: &DIManager) -> Option<Self> {
+    <S as GetInput>::get_input(manager)
+      .and_then(|s| <T as GetInput>::get_input(manager).and_then(|t| Some((s, t))))
   }
 }
 
@@ -122,11 +63,63 @@ impl B {
 mod test {
   use super::*;
 
+  trait Database {
+    fn name(&self) -> &'static str;
+  }
+
+  struct MySQL;
+  struct Postgres;
+  impl Database for MySQL {
+    fn name(&self) -> &'static str {
+      "MySQL"
+    }
+  }
+  impl Database for Postgres {
+    fn name(&self) -> &'static str {
+      "Postgres"
+    }
+  }
+
+  impl DIBuilder for MySQL {
+    type Input = ();
+    type Output = Box<dyn Database>;
+    fn build((): ()) -> Box<dyn Database> {
+      Box::new(MySQL)
+    }
+  }
+
+  impl DIBuilder for Postgres {
+    type Input = ();
+    type Output = Box<dyn Database>;
+    fn build((): ()) -> Box<dyn Database> {
+      Box::new(Postgres)
+    }
+  }
+
+  struct WebServer {
+    db: DIObj<Box<dyn Database>>,
+  }
+
+  impl DIBuilder for WebServer {
+    type Input = (DIObj<Box<dyn Database>>,);
+    type Output = WebServer;
+
+    fn build((db,): Self::Input) -> WebServer {
+      WebServer { db }
+    }
+  }
+
+  impl WebServer {
+    fn run(&self) {
+      println!("Db name: {}", self.db.lock().unwrap().name());
+    }
+  }
+
   #[test]
   fn basic() {
     let mut manager = DIManager::new();
-    manager.build::<A2>().unwrap();
-    let b = manager.build::<B>().unwrap();
-    b.lock().unwrap().run();
+    manager.build::<MySQL>().unwrap();
+    let server = manager.build::<WebServer>().unwrap();
+    server.lock().unwrap().run();
   }
 }
