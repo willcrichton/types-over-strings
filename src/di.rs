@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 pub type DIObj<T> = Arc<Mutex<T>>;
 
-pub trait GetInput: 'static + Sized {
+pub trait GetInput: Sized {
   fn get_input(manager: &DIManager) -> Option<Self>;
 }
 
@@ -22,8 +22,8 @@ impl DIManager {
   }
 
   pub fn build<T: DIBuilder>(&mut self) -> Option<DIObj<T::Output>> {
-    let deps = T::Input::get_input(self)?;
-    let obj = T::build(deps);
+    let input = T::Input::get_input(self)?;
+    let obj = T::build(input);
     let sync_obj = Arc::new(Mutex::new(obj));
     self.0.set::<DIObj<T::Output>>(sync_obj.clone());
     Some(sync_obj)
@@ -50,11 +50,8 @@ impl<T: GetInput> GetInput for (T,) {
 
 impl<S: GetInput, T: GetInput> GetInput for (S, T) {
   fn get_input(manager: &DIManager) -> Option<Self> {
-    S::get_input(manager).and_then(|s| {
-      T::get_input(manager).and_then(|t| {
-        Some((s, t))
-      })
-    })
+    S::get_input(manager)
+      .and_then(|s| T::get_input(manager).and_then(|t| Some((s, t))))
   }
 }
 
